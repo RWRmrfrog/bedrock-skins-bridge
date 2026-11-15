@@ -12,6 +12,11 @@ Claude was used heavily in the development of this plugin. This is my first expe
 
 ## Features
 
+<img width="2280" height="1080" alt="Screenshot_20261114-234157_Minecraft" src="https://github.com/user-attachments/assets/4d00fa38-39b9-4f32-a414-94e24f6f2dc4" />
+
+[Video Showcase](https://youtu.be/IS7opdeRGsQ)
+
+
 | What | Status |
 |---|---|
 | Modded Java ↔ modded Java: custom geometry, HD textures, capes, live skin switching | Works |

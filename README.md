@@ -8,7 +8,7 @@ It is the server side of the [Bedrock Skins](https://github.com/BrandonItaly/Bed
 
 ## AI Disclaimer
 
-Claude was used heavily in the development of this plugin. This is my first experience coding in rust and I know little to nothing about the bedrock protocol. This project is no more than a prototype and shouldn't be used for important servers yet. If you feel you have more experience in rust and would like to make this plugin a bit more stable, feel free to fork this repository and create a pull request.
+Claude was used heavily in the development of this plugin. This is my first experience coding in rust and I know little to nothing about the bedrock protocol. This project is no more than a prototype and shouldn't be used for important servers yet. If you feel you have more experience in rust and would like to make this plugin a bit more stable, feel free to contribute.
 
 ## Features
 

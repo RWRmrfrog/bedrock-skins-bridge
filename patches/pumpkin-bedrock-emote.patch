@@ -1,0 +1,93 @@
+diff --git a/crates/pumpkin-plugin-wit/v0.1/bedrock-packets.wit b/crates/pumpkin-plugin-wit/v0.1/bedrock-packets.wit
+index e8e9acf6..6bfe19f9 100644
+--- a/crates/pumpkin-plugin-wit/v0.1/bedrock-packets.wit
++++ b/crates/pumpkin-plugin-wit/v0.1/bedrock-packets.wit
+@@ -1659,6 +1659,22 @@ interface bedrock-packets {
+     colors: list<s32>,
+   }
+   /// Changes the skin of a player the client can already see. Servers send this for live skin
++  /// Makes a player's model play an emote on the client. Servers send this to the other clients
++  /// when a player emotes; the client only plays emotes it knows, identified by piece UUID.
++  record c-emote {
++    /// Runtime entity ID of the emoting player.
++    actor-runtime-id: s64,
++    /// UUID identifier string of the emote piece being performed.
++    emote-id: string,
++    /// Duration of the emote animation in ticks.
++    emote-length-ticks: s32,
++    /// Xbox Live User ID of the player (empty if unknown).
++    xuid: string,
++    /// Platform ID string of the player (empty if unknown).
++    platform-id: string,
++    /// Bit 0: the emote was started by the server. Bit 1: suppress the chat notification.
++    %flags: u8,
++  }
+   /// changes and custom geometry; `c-player-list` only sets the skin when a player is spawned.
+   record c-player-skin {
+     uuid: uuid,
+@@ -2473,6 +2489,8 @@ interface bedrock-packets {
+     c-player-list(c-player-list),
+     /// Changes the skin of a player the client can already see.
+     c-player-skin(c-player-skin),
++    /// Makes a player's model play an emote on the client.
++    c-emote(c-emote),
+     /// Sent by the server to despawn an entity from the client's world.
+     c-remove-actor(c-remove-actor),
+     /// Removes a scoreboard objective, hiding it from the player's screen.
+diff --git a/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs b/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs
+index 87ae8e66..bc7b52f4 100644
+--- a/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs
++++ b/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs
+@@ -11,8 +11,12 @@ use pumpkin_protocol::bedrock::client::player_list::{
+     CPlayerList, PersonaPiece, PieceTintColor, PlayerListEntry, Skin,
+ };
+ use pumpkin_protocol::bedrock::client::player_skin::CPlayerSkin;
++use pumpkin_protocol::bedrock::server::emote::SEmote;
+ use pumpkin_protocol::bedrock::server::login::ClientData;
+ use pumpkin_protocol::codec::var_long::VarLong;
++use pumpkin_protocol::codec::var_uint::VarUInt;
++use pumpkin_protocol::codec::var_ulong::VarULong;
++use std::borrow::Cow;
+ 
+ const fn build_platform(p: wit::BuildPlatform) -> BuildPlatform {
+     match p {
+@@ -213,3 +217,17 @@ pub fn login_skin(d: &ClientData) -> wit::Skin {
+         profile_hash: String::new(),
+     }
+ }
++
++/// The clientbound emote packet has the same layout as the serverbound one, so the protocol's
++/// `SEmote` is reused to write it.
++#[must_use]
++pub fn emote_from_wit(e: &wit::CEmote) -> SEmote<'_> {
++    SEmote {
++        actor_runtime_id: VarULong(e.actor_runtime_id.max(0) as u64),
++        emote_id: Cow::Borrowed(e.emote_id.as_str()),
++        emote_length_ticks: VarUInt(e.emote_length_ticks.max(0) as u32),
++        xuid: Cow::Borrowed(e.xuid.as_str()),
++        platform_id: Cow::Borrowed(e.platform_id.as_str()),
++        flags: e.flags,
++    }
++}
+diff --git a/crates/pumpkin-wasm-host-v0_1/src/player.rs b/crates/pumpkin-wasm-host-v0_1/src/player.rs
+index 3a9e9fb8..8e92338f 100644
+--- a/crates/pumpkin-wasm-host-v0_1/src/player.rs
++++ b/crates/pumpkin-wasm-host-v0_1/src/player.rs
+@@ -4055,6 +4055,17 @@ impl pumpkin::plugin::player::HostBedrockPlayer for PluginHostState {
+             return Ok(());
+         }
+ 
++        if let pumpkin::plugin::bedrock_packets::ClientboundPacket::CEmote(emote) = &packet {
++            let mut buf = Vec::new();
++            pumpkin_core::net::bedrock::BedrockClient::write_raw_packet(
++                &crate::bedrock_player_list::emote_from_wit(emote),
++                &mut buf,
++            )
++            .map_err(|e| wasmtime::Error::msg(format!("c-emote: {e}")))?;
++            player.client.send_packet_now_data(buf.into()).await;
++            return Ok(());
++        }
++
+         if let Some(bytes) = crate::generated_packets::serialize_bedrock_packet(&packet) {
+             player.client.send_packet_now_data(bytes).await;
+         }

@@ -1,0 +1,26 @@
+[package]
+name = "bedrock-skins-bridge"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Pumpkin plugin: server side of the Bedrock Skins mod, with Java <-> Bedrock skin bridging"
+publish = false
+
+[lib]
+# Builds target/wasm32-wasip2/release/bedrock_skins_bridge.wasm
+name = "bedrock_skins_bridge"
+crate-type = ["cdylib"]
+
+[dependencies]
+bedrock-skins-core = { path = "core" }
+# Pumpkin master as of 2026-11-13; its plugin API binds the pumpkin:plugin@0.1.0 ABI.
+# The plugin also needs the Pumpkin patches in `patches/` (new packet and API function), so
+# `build.sh` builds against a patched checkout instead of this revision. A plain `cargo build`
+# against upstream fails on `CPlayerSkin` and `get_login_skin`.
+pumpkin-plugin-api = { git = "https://github.com/Pumpkin-MC/Pumpkin.git", rev = "058f7ec6fde8a8f24e3d6bb92344df48a2f07ffc" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true

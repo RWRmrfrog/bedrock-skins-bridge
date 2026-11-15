@@ -1,0 +1,154 @@
+diff --git a/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs b/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs
+new file mode 100644
+index 0000000..b8d6e1c
+--- /dev/null
++++ b/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs
+@@ -0,0 +1,114 @@
++//! Serializes the WIT `c-player-list` packet, which the generated packet mapping skips because
++//! the protocol type has a hand-written writer. Plugins use it to show skins to Bedrock players.
++
++use crate::pumpkin::plugin::bedrock_packets as wit;
++use crate::pumpkin::plugin::uuid::Uuid as WitUuid;
++use crate::uuid::UuidExt;
++use pumpkin_protocol::bedrock::client::common::BuildPlatform;
++use pumpkin_protocol::bedrock::client::player_list::{
++    CPlayerList, PersonaPiece, PieceTintColor, PlayerListEntry, Skin,
++};
++use pumpkin_protocol::codec::var_long::VarLong;
++
++const fn build_platform(p: wit::BuildPlatform) -> BuildPlatform {
++    match p {
++        wit::BuildPlatform::Unknown => BuildPlatform::Unknown,
++        wit::BuildPlatform::Google => BuildPlatform::Google,
++        wit::BuildPlatform::Ios => BuildPlatform::Ios,
++        wit::BuildPlatform::Osx => BuildPlatform::Osx,
++        wit::BuildPlatform::Amazon => BuildPlatform::Amazon,
++        wit::BuildPlatform::GearVr => BuildPlatform::GearVr,
++        wit::BuildPlatform::Uwp => BuildPlatform::Uwp,
++        wit::BuildPlatform::Win32 => BuildPlatform::Win32,
++        wit::BuildPlatform::Dedicated => BuildPlatform::Dedicated,
++        wit::BuildPlatform::TvOs => BuildPlatform::TvOs,
++        wit::BuildPlatform::Sony => BuildPlatform::Sony,
++        wit::BuildPlatform::Nintendo => BuildPlatform::Nintendo,
++        wit::BuildPlatform::Xbox => BuildPlatform::Xbox,
++        wit::BuildPlatform::WindowsPhone => BuildPlatform::WindowsPhone,
++        wit::BuildPlatform::Linux => BuildPlatform::Linux,
++    }
++}
++
++fn skin(s: &wit::Skin) -> Skin {
++    Skin {
++        skin_id: s.skin_id.clone(),
++        play_fab_id: s.play_fab_id.clone(),
++        resource_patch: s.resource_patch.clone(),
++        image_width: s.image_width.max(0) as u32,
++        image_height: s.image_height.max(0) as u32,
++        skin_data: s.skin_data.clone(),
++        // The v0.1 WIT `skin-animation` is the login (base64) shape; animated skins are not
++        // carried through this path.
++        animations: Vec::new(),
++        cape_width: s.cape_width.max(0) as u32,
++        cape_height: s.cape_height.max(0) as u32,
++        cape_data: s.cape_data.clone(),
++        geometry_data: s.geometry_data.clone(),
++        animation_data: s.animation_data.clone(),
++        geometry_data_engine_version: s.geometry_data_engine_version.clone(),
++        cape_id: s.cape_id.clone(),
++        full_id: s.full_id.clone(),
++        arm_size: s.arm_size.clone(),
++        skin_color: s.skin_color.clone(),
++        persona_pieces: s
++            .persona_pieces
++            .iter()
++            .map(|p| PersonaPiece {
++                piece_id: p.piece_id.clone(),
++                piece_type: p.piece_type.parse().unwrap_or_default(),
++                pack_id: uuid::Uuid::parse_str(&p.pack_id).unwrap_or_default(),
++                is_default: p.is_default,
++                product_id: p.product_id.clone(),
++            })
++            .collect(),
++        piece_tint_colors: s
++            .piece_tint_colors
++            .iter()
++            .map(|t| {
++                let mut colors = [0i32; 4];
++                for (dst, src) in colors.iter_mut().zip(&t.colors) {
++                    *dst = *src;
++                }
++                PieceTintColor { piece_type: t.piece_type.clone(), colors }
++            })
++            .collect(),
++        is_premium: s.is_premium,
++        is_persona: s.is_persona,
++        persona_cape_on_classic: s.persona_cape_on_classic,
++        is_primary_user: s.is_primary_user,
++        override_appearance: s.override_appearance,
++        is_trusted: s.is_trusted,
++        profile_hash: s.profile_hash.clone(),
++    }
++}
++
++#[must_use]
++pub fn from_wit(list: &wit::CPlayerList) -> CPlayerList {
++    CPlayerList {
++        action: list.action,
++        entries: list
++            .entries
++            .iter()
++            .map(|e| {
++                let mut color = [0u8; 4];
++                for (dst, src) in color.iter_mut().zip(&e.player_color) {
++                    *dst = *src;
++                }
++                PlayerListEntry {
++                    uuid: WitUuid::from_wit(&e.uuid),
++                    entity_unique_id: VarLong(e.entity_unique_id),
++                    username: e.username.clone(),
++                    xuid: e.xuid.clone(),
++                    platform_chat_id: e.platform_chat_id.clone(),
++                    build_platform: build_platform(e.build_platform),
++                    skin: skin(&e.skin),
++                    is_teacher: e.is_teacher,
++                    is_host: e.is_host,
++                    is_sub_client: e.is_sub_client,
++                    player_color: color,
++                }
++            })
++            .collect(),
++    }
++}
+diff --git a/crates/pumpkin-wasm-host-v0_1/src/lib.rs b/crates/pumpkin-wasm-host-v0_1/src/lib.rs
+index ab17e77..a8f9f17 100644
+--- a/crates/pumpkin-wasm-host-v0_1/src/lib.rs
++++ b/crates/pumpkin-wasm-host-v0_1/src/lib.rs
+@@ -14,6 +14,7 @@ use wasmtime::{Engine, Store};
+ mod bindings;
+ 
+ pub mod advancement;
++pub mod bedrock_player_list;
+ pub mod block_entity;
+ pub mod boss_bar;
+ pub mod commands;
+diff --git a/crates/pumpkin-wasm-host-v0_1/src/player.rs b/crates/pumpkin-wasm-host-v0_1/src/player.rs
+index 00c55bc..ab6d44e 100644
+--- a/crates/pumpkin-wasm-host-v0_1/src/player.rs
++++ b/crates/pumpkin-wasm-host-v0_1/src/player.rs
+@@ -4033,6 +4033,17 @@ impl pumpkin::plugin::player::HostBedrockPlayer for PluginHostState {
+     ) -> wasmtime::Result<()> {
+         let player = self.get(&player)?.clone();
+ 
++        if let pumpkin::plugin::bedrock_packets::ClientboundPacket::CPlayerList(list) = &packet {
++            let mut buf = Vec::new();
++            pumpkin_core::net::bedrock::BedrockClient::write_raw_packet(
++                &crate::bedrock_player_list::from_wit(list),
++                &mut buf,
++            )
++            .map_err(|e| wasmtime::Error::msg(format!("c-player-list: {e}")))?;
++            player.client.send_packet_now_data(buf.into()).await;
++            return Ok(());
++        }
++
+         if let Some(bytes) = crate::generated_packets::serialize_bedrock_packet(&packet) {
+             player.client.send_packet_now_data(bytes).await;
+         }

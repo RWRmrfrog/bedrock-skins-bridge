@@ -1,0 +1,464 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 97a9252a..ffd19698 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3350,6 +3350,7 @@ dependencies = [
+ name = "pumpkin-wasm-host-v0_1"
+ version = "0.2.2+26.3-26.60"
+ dependencies = [
++ "base64 0.23.1",
+  "bytes",
+  "pumpkin-config",
+  "pumpkin-core",
+diff --git a/crates/pumpkin-plugin-wit/v0.1/bedrock-packets.wit b/crates/pumpkin-plugin-wit/v0.1/bedrock-packets.wit
+index 6ab597e7..6bfe19f9 100644
+--- a/crates/pumpkin-plugin-wit/v0.1/bedrock-packets.wit
++++ b/crates/pumpkin-plugin-wit/v0.1/bedrock-packets.wit
+@@ -1658,6 +1658,31 @@ interface bedrock-packets {
+     piece-type: string,
+     colors: list<s32>,
+   }
++  /// Changes the skin of a player the client can already see. Servers send this for live skin
++  /// Makes a player's model play an emote on the client. Servers send this to the other clients
++  /// when a player emotes; the client only plays emotes it knows, identified by piece UUID.
++  record c-emote {
++    /// Runtime entity ID of the emoting player.
++    actor-runtime-id: s64,
++    /// UUID identifier string of the emote piece being performed.
++    emote-id: string,
++    /// Duration of the emote animation in ticks.
++    emote-length-ticks: s32,
++    /// Xbox Live User ID of the player (empty if unknown).
++    xuid: string,
++    /// Platform ID string of the player (empty if unknown).
++    platform-id: string,
++    /// Bit 0: the emote was started by the server. Bit 1: suppress the chat notification.
++    %flags: u8,
++  }
++  /// changes and custom geometry; `c-player-list` only sets the skin when a player is spawned.
++  record c-player-skin {
++    uuid: uuid,
++    skin: skin,
++    new-skin-name: string,
++    old-skin-name: string,
++  }
++
+   /// Sent by the server to despawn an entity from the client's world.
+   record c-remove-actor {
+     /// Unique entity ID of the entity to remove.
+@@ -2462,6 +2487,10 @@ interface bedrock-packets {
+     c-player-hotbar(c-player-hotbar),
+     /// Sent by the server to add or remove players from the in-game pause screen player list.
+     c-player-list(c-player-list),
++    /// Changes the skin of a player the client can already see.
++    c-player-skin(c-player-skin),
++    /// Makes a player's model play an emote on the client.
++    c-emote(c-emote),
+     /// Sent by the server to despawn an entity from the client's world.
+     c-remove-actor(c-remove-actor),
+     /// Removes a scoreboard objective, hiding it from the player's screen.
+diff --git a/crates/pumpkin-plugin-wit/v0.1/player.wit b/crates/pumpkin-plugin-wit/v0.1/player.wit
+index 919e2d81..3b51ca7b 100644
+--- a/crates/pumpkin-plugin-wit/v0.1/player.wit
++++ b/crates/pumpkin-plugin-wit/v0.1/player.wit
+@@ -9,7 +9,7 @@ interface player {
+     use forms.{form};
+     use java-dialogs.{dialog};
+     use java-packets.{clientbound-packet as java-packet};
+-    use bedrock-packets.{clientbound-packet as bedrock-packet};
++    use bedrock-packets.{clientbound-packet as bedrock-packet, skin as bedrock-skin};
+     use uuid.{uuid};
+     use status-effect.{status-effect-type, status-effect-instance};
+     use scoreboard.{scoreboard, bedrock-scoreboard};
+@@ -1392,6 +1392,11 @@ interface player {
+         /// Returns the player's configuration settings.
+         get-settings: func() -> bedrock-player-settings;
+ 
++        /// Returns the skin the client sent when it logged in (raw RGBA image data plus geometry),
++        /// or `none` if the login data is not available. Later skin changes arrive as the client's
++        /// `PlayerSkin` packet (id 93) through `packet-received-event`.
++        get-login-skin: func() -> option<bedrock-skin>;
++
+         /// Returns whether a specific Bedrock-only ability is enabled for the player.
+         get-ability: func(ability: bedrock-ability) -> bool;
+ 
+diff --git a/crates/pumpkin-protocol/src/bedrock/client/mod.rs b/crates/pumpkin-protocol/src/bedrock/client/mod.rs
+index 58a352ae..fba538a6 100644
+--- a/crates/pumpkin-protocol/src/bedrock/client/mod.rs
++++ b/crates/pumpkin-protocol/src/bedrock/client/mod.rs
+@@ -41,6 +41,7 @@ pub mod play_audio_content;
+ pub mod play_status;
+ pub mod player_hotbar;
+ pub mod player_list;
++pub mod player_skin;
+ pub mod remove_actor;
+ pub mod remove_objective;
+ pub mod resource_pack_chunk_data;
+@@ -112,6 +113,7 @@ pub use play_audio_content::*;
+ pub use play_status::*;
+ pub use player_hotbar::*;
+ pub use player_list::*;
++pub use player_skin::*;
+ pub use remove_actor::*;
+ pub use remove_objective::*;
+ pub use resource_pack_chunk_data::*;
+diff --git a/crates/pumpkin-protocol/src/bedrock/client/player_skin.rs b/crates/pumpkin-protocol/src/bedrock/client/player_skin.rs
+new file mode 100644
+index 00000000..a62f8c6b
+--- /dev/null
++++ b/crates/pumpkin-protocol/src/bedrock/client/player_skin.rs
+@@ -0,0 +1,24 @@
++use pumpkin_macros::packet;
++use uuid::Uuid;
++
++use crate::serial::PacketWrite;
++
++use super::player_list::Skin;
++
++/// Changes the skin of a player the client can already see.
++///
++/// Clients send this when their player changes skin (serverbound id 93) and servers broadcast it
++/// to the other clients. Mojang's protocol docs describe it as the packet third-party servers use
++/// to send custom geometry. A `PlayerList` entry only supplies the skin when a player is spawned.
++#[derive(PacketWrite)]
++#[packet(93)]
++pub struct CPlayerSkin {
++    /// UUID of the player whose skin changes.
++    pub uuid: Uuid,
++    /// The new skin.
++    pub skin: Skin,
++    /// Localized name of the new skin.
++    pub new_skin_name: String,
++    /// Localized name of the previous skin.
++    pub old_skin_name: String,
++}
+diff --git a/crates/pumpkin-wasm-host-v0_1/Cargo.toml b/crates/pumpkin-wasm-host-v0_1/Cargo.toml
+index fd0ccb6c..a6c26b75 100644
+--- a/crates/pumpkin-wasm-host-v0_1/Cargo.toml
++++ b/crates/pumpkin-wasm-host-v0_1/Cargo.toml
+@@ -10,6 +10,7 @@ license.workspace = true
+ doctest = false
+ 
+ [dependencies]
++base64.workspace = true
+ pumpkin-core.workspace = true
+ pumpkin-wasm-host-common.workspace = true
+ pumpkin-config.workspace = true
+diff --git a/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs b/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs
+new file mode 100644
+index 00000000..bc7b52f4
+--- /dev/null
++++ b/crates/pumpkin-wasm-host-v0_1/src/bedrock_player_list.rs
+@@ -0,0 +1,233 @@
++//! Serializes the WIT `c-player-list` and `c-player-skin` packets, which the generated packet
++//! mapping skips because the protocol types have hand-written writers, and converts a Bedrock
++//! client's login skin to the WIT `skin` record. Plugins use these to show skins to players.
++
++use crate::pumpkin::plugin::bedrock_packets as wit;
++use crate::pumpkin::plugin::uuid::Uuid as WitUuid;
++use crate::uuid::UuidExt;
++use base64::{Engine, engine::general_purpose::STANDARD};
++use pumpkin_protocol::bedrock::client::common::BuildPlatform;
++use pumpkin_protocol::bedrock::client::player_list::{
++    CPlayerList, PersonaPiece, PieceTintColor, PlayerListEntry, Skin,
++};
++use pumpkin_protocol::bedrock::client::player_skin::CPlayerSkin;
++use pumpkin_protocol::bedrock::server::emote::SEmote;
++use pumpkin_protocol::bedrock::server::login::ClientData;
++use pumpkin_protocol::codec::var_long::VarLong;
++use pumpkin_protocol::codec::var_uint::VarUInt;
++use pumpkin_protocol::codec::var_ulong::VarULong;
++use std::borrow::Cow;
++
++const fn build_platform(p: wit::BuildPlatform) -> BuildPlatform {
++    match p {
++        wit::BuildPlatform::Unknown => BuildPlatform::Unknown,
++        wit::BuildPlatform::Google => BuildPlatform::Google,
++        wit::BuildPlatform::Ios => BuildPlatform::Ios,
++        wit::BuildPlatform::Osx => BuildPlatform::Osx,
++        wit::BuildPlatform::Amazon => BuildPlatform::Amazon,
++        wit::BuildPlatform::GearVr => BuildPlatform::GearVr,
++        wit::BuildPlatform::Uwp => BuildPlatform::Uwp,
++        wit::BuildPlatform::Win32 => BuildPlatform::Win32,
++        wit::BuildPlatform::Dedicated => BuildPlatform::Dedicated,
++        wit::BuildPlatform::TvOs => BuildPlatform::TvOs,
++        wit::BuildPlatform::Sony => BuildPlatform::Sony,
++        wit::BuildPlatform::Nintendo => BuildPlatform::Nintendo,
++        wit::BuildPlatform::Xbox => BuildPlatform::Xbox,
++        wit::BuildPlatform::WindowsPhone => BuildPlatform::WindowsPhone,
++        wit::BuildPlatform::Linux => BuildPlatform::Linux,
++    }
++}
++
++fn skin(s: &wit::Skin) -> Skin {
++    Skin {
++        skin_id: s.skin_id.clone(),
++        play_fab_id: s.play_fab_id.clone(),
++        resource_patch: s.resource_patch.clone(),
++        image_width: s.image_width.max(0) as u32,
++        image_height: s.image_height.max(0) as u32,
++        skin_data: s.skin_data.clone(),
++        // The v0.1 WIT `skin-animation` is the login (base64) shape; animated skins are not
++        // carried through this path.
++        animations: Vec::new(),
++        cape_width: s.cape_width.max(0) as u32,
++        cape_height: s.cape_height.max(0) as u32,
++        cape_data: s.cape_data.clone(),
++        geometry_data: s.geometry_data.clone(),
++        animation_data: s.animation_data.clone(),
++        geometry_data_engine_version: s.geometry_data_engine_version.clone(),
++        cape_id: s.cape_id.clone(),
++        full_id: s.full_id.clone(),
++        arm_size: s.arm_size.clone(),
++        skin_color: s.skin_color.clone(),
++        persona_pieces: s
++            .persona_pieces
++            .iter()
++            .map(|p| PersonaPiece {
++                piece_id: p.piece_id.clone(),
++                piece_type: p.piece_type.parse().unwrap_or_default(),
++                pack_id: uuid::Uuid::parse_str(&p.pack_id).unwrap_or_default(),
++                is_default: p.is_default,
++                product_id: p.product_id.clone(),
++            })
++            .collect(),
++        piece_tint_colors: s
++            .piece_tint_colors
++            .iter()
++            .map(|t| {
++                let mut colors = [0i32; 4];
++                for (dst, src) in colors.iter_mut().zip(&t.colors) {
++                    *dst = *src;
++                }
++                PieceTintColor { piece_type: t.piece_type.clone(), colors }
++            })
++            .collect(),
++        is_premium: s.is_premium,
++        is_persona: s.is_persona,
++        persona_cape_on_classic: s.persona_cape_on_classic,
++        is_primary_user: s.is_primary_user,
++        override_appearance: s.override_appearance,
++        is_trusted: s.is_trusted,
++        profile_hash: s.profile_hash.clone(),
++    }
++}
++
++#[must_use]
++pub fn from_wit(list: &wit::CPlayerList) -> CPlayerList {
++    CPlayerList {
++        action: list.action,
++        entries: list
++            .entries
++            .iter()
++            .map(|e| {
++                let mut color = [0u8; 4];
++                for (dst, src) in color.iter_mut().zip(&e.player_color) {
++                    *dst = *src;
++                }
++                PlayerListEntry {
++                    uuid: WitUuid::from_wit(&e.uuid),
++                    entity_unique_id: VarLong(e.entity_unique_id),
++                    username: e.username.clone(),
++                    xuid: e.xuid.clone(),
++                    platform_chat_id: e.platform_chat_id.clone(),
++                    build_platform: build_platform(e.build_platform),
++                    skin: skin(&e.skin),
++                    is_teacher: e.is_teacher,
++                    is_host: e.is_host,
++                    is_sub_client: e.is_sub_client,
++                    player_color: color,
++                }
++            })
++            .collect(),
++    }
++}
++
++#[must_use]
++pub fn player_skin_from_wit(p: &wit::CPlayerSkin) -> CPlayerSkin {
++    CPlayerSkin {
++        uuid: WitUuid::from_wit(&p.uuid),
++        skin: skin(&p.skin),
++        new_skin_name: p.new_skin_name.clone(),
++        old_skin_name: p.old_skin_name.clone(),
++    }
++}
++
++fn b64(s: &str) -> Vec<u8> {
++    STANDARD.decode(s.trim()).unwrap_or_default()
++}
++
++/// Parses a login colour such as `#ffaabbcc` (ARGB) into the signed value the protocol uses.
++fn login_color(s: &str) -> i32 {
++    u32::from_str_radix(s.trim().trim_start_matches('#'), 16).unwrap_or(0) as i32
++}
++
++/// Maps a login piece type such as `persona_hair` to the numeric `persona::PieceType` value the
++/// `skin` record carries (see Mojang's protocol docs, `persona__PieceType`).
++fn persona_piece_type(name: &str) -> i32 {
++    const NAMES: [&str; 30] = [
++        "unknown", "skeleton", "body", "skin", "bottom", "feet", "dress", "top", "highpants",
++        "hands", "outerwear", "facialhair", "mouth", "eyes", "hair", "hood", "back",
++        "faceaccessory", "head", "legs", "leftleg", "rightleg", "arms", "leftarm", "rightarm",
++        "capes", "classicskin", "emote", "coco", "unsupported",
++    ];
++    let normalized: String = name
++        .trim_start_matches("persona_")
++        .chars()
++        .filter(|c| *c != '_')
++        .flat_map(char::to_lowercase)
++        .collect();
++    let normalized = if normalized == "hand" { "hands" } else { normalized.as_str() };
++    NAMES.iter().position(|n| *n == normalized).unwrap_or(0) as i32
++}
++
++/// Converts the skin a Bedrock client sent in its login data to the WIT `skin` record.
++///
++/// Images stay raw RGBA, geometry and resource patch are decoded to their JSON bytes. Animated
++/// skins are not carried over, and persona piece types are numeric like the `skin` record expects.
++#[must_use]
++pub fn login_skin(d: &ClientData) -> wit::Skin {
++    // The engine version is base64 in the login data, but accept a plain string too.
++    let engine_version = STANDARD
++        .decode(d.skin_geometry_version.trim())
++        .ok()
++        .filter(|v| !v.is_empty())
++        .unwrap_or_else(|| d.skin_geometry_version.clone().into_bytes());
++    wit::Skin {
++        skin_id: d.skin_id.clone(),
++        play_fab_id: d.play_fab_id.clone(),
++        resource_patch: b64(&d.skin_resource_patch),
++        image_width: d.skin_image_width,
++        image_height: d.skin_image_height,
++        skin_data: b64(&d.skin_data),
++        animations: Vec::new(),
++        cape_width: d.cape_image_width,
++        cape_height: d.cape_image_height,
++        cape_data: b64(&d.cape_data),
++        geometry_data: b64(&d.skin_geometry),
++        animation_data: b64(&d.skin_animation_data),
++        geometry_data_engine_version: engine_version,
++        cape_id: d.cape_id.clone(),
++        full_id: format!("{}{}", d.skin_id, d.cape_id),
++        arm_size: d.arm_size.clone(),
++        skin_color: d.skin_colour.clone(),
++        persona_pieces: d
++            .persona_pieces
++            .iter()
++            .map(|p| wit::PersonaPiece {
++                is_default: p.is_default,
++                pack_id: p.pack_id.clone(),
++                piece_id: p.piece_id.clone(),
++                piece_type: persona_piece_type(&p.piece_type).to_string(),
++                product_id: p.product_id.clone(),
++            })
++            .collect(),
++        piece_tint_colors: d
++            .piece_tint_colours
++            .iter()
++            .map(|t| wit::PieceTintColor {
++                piece_type: t.piece_type.clone(),
++                colors: t.colours.iter().map(|c| login_color(c)).collect(),
++            })
++            .collect(),
++        is_premium: d.premium_skin,
++        is_persona: d.persona_skin,
++        persona_cape_on_classic: d.cape_on_classic_skin,
++        is_primary_user: true,
++        override_appearance: d.override_skin,
++        is_trusted: d.trusted_skin,
++        profile_hash: String::new(),
++    }
++}
++
++/// The clientbound emote packet has the same layout as the serverbound one, so the protocol's
++/// `SEmote` is reused to write it.
++#[must_use]
++pub fn emote_from_wit(e: &wit::CEmote) -> SEmote<'_> {
++    SEmote {
++        actor_runtime_id: VarULong(e.actor_runtime_id.max(0) as u64),
++        emote_id: Cow::Borrowed(e.emote_id.as_str()),
++        emote_length_ticks: VarUInt(e.emote_length_ticks.max(0) as u32),
++        xuid: Cow::Borrowed(e.xuid.as_str()),
++        platform_id: Cow::Borrowed(e.platform_id.as_str()),
++        flags: e.flags,
++    }
++}
+diff --git a/crates/pumpkin-wasm-host-v0_1/src/lib.rs b/crates/pumpkin-wasm-host-v0_1/src/lib.rs
+index ab17e779..a8f9f175 100644
+--- a/crates/pumpkin-wasm-host-v0_1/src/lib.rs
++++ b/crates/pumpkin-wasm-host-v0_1/src/lib.rs
+@@ -14,6 +14,7 @@ use wasmtime::{Engine, Store};
+ mod bindings;
+ 
+ pub mod advancement;
++pub mod bedrock_player_list;
+ pub mod block_entity;
+ pub mod boss_bar;
+ pub mod commands;
+diff --git a/crates/pumpkin-wasm-host-v0_1/src/player.rs b/crates/pumpkin-wasm-host-v0_1/src/player.rs
+index 00c55bcf..8e92338f 100644
+--- a/crates/pumpkin-wasm-host-v0_1/src/player.rs
++++ b/crates/pumpkin-wasm-host-v0_1/src/player.rs
+@@ -4033,6 +4033,39 @@ impl pumpkin::plugin::player::HostBedrockPlayer for PluginHostState {
+     ) -> wasmtime::Result<()> {
+         let player = self.get(&player)?.clone();
+ 
++        if let pumpkin::plugin::bedrock_packets::ClientboundPacket::CPlayerList(list) = &packet {
++            let mut buf = Vec::new();
++            pumpkin_core::net::bedrock::BedrockClient::write_raw_packet(
++                &crate::bedrock_player_list::from_wit(list),
++                &mut buf,
++            )
++            .map_err(|e| wasmtime::Error::msg(format!("c-player-list: {e}")))?;
++            player.client.send_packet_now_data(buf.into()).await;
++            return Ok(());
++        }
++
++        if let pumpkin::plugin::bedrock_packets::ClientboundPacket::CPlayerSkin(skin) = &packet {
++            let mut buf = Vec::new();
++            pumpkin_core::net::bedrock::BedrockClient::write_raw_packet(
++                &crate::bedrock_player_list::player_skin_from_wit(skin),
++                &mut buf,
++            )
++            .map_err(|e| wasmtime::Error::msg(format!("c-player-skin: {e}")))?;
++            player.client.send_packet_now_data(buf.into()).await;
++            return Ok(());
++        }
++
++        if let pumpkin::plugin::bedrock_packets::ClientboundPacket::CEmote(emote) = &packet {
++            let mut buf = Vec::new();
++            pumpkin_core::net::bedrock::BedrockClient::write_raw_packet(
++                &crate::bedrock_player_list::emote_from_wit(emote),
++                &mut buf,
++            )
++            .map_err(|e| wasmtime::Error::msg(format!("c-emote: {e}")))?;
++            player.client.send_packet_now_data(buf.into()).await;
++            return Ok(());
++        }
++
+         if let Some(bytes) = crate::generated_packets::serialize_bedrock_packet(&packet) {
+             player.client.send_packet_now_data(bytes).await;
+         }
+@@ -4071,6 +4104,22 @@ impl pumpkin::plugin::player::HostBedrockPlayer for PluginHostState {
+         }
+     }
+ 
++    fn get_login_skin(
++        &mut self,
++        player: Resource<pumpkin::plugin::player::BedrockPlayer>,
++    ) -> wasmtime::Result<Option<pumpkin::plugin::bedrock_packets::Skin>> {
++        let player = self.get(&player)?.clone();
++
++        if let pumpkin_core::net::ClientPlatform::Bedrock(client) = player.client.as_ref() {
++            let data = client.client_data.load();
++            Ok((**data)
++                .as_ref()
++                .map(|data| crate::bedrock_player_list::login_skin(data)))
++        } else {
++            Err(wasmtime::Error::msg("not a bedrock player"))
++        }
++    }
++
+     fn get_scoreboard(
+         &mut self,
+         player: Resource<pumpkin::plugin::player::BedrockPlayer>,

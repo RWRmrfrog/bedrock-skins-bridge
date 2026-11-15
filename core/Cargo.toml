@@ -1,0 +1,13 @@
+[package]
+name = "bedrock-skins-core"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Bedrock Skins Bridge core: codecs, mod payloads, Java/Bedrock skin translation and bridge state. No dependencies."
+publish = false
+
+# Standalone, so `cargo test` here never needs the network (the plugin crate pulls in Pumpkin).
+[workspace]
+
+[lib]
+name = "bedrock_skins_core"

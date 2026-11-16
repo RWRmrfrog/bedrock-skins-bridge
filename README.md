@@ -4,7 +4,7 @@ A [Pumpkin](https://github.com/Pumpkin-MC/Pumpkin) server plugin that lets Java 
 
 It is the server side of the [Bedrock Skins](https://github.com/BrandonItaly/Bedrock-Skins) Java mod, which lets Java players use Bedrock-format skins with custom 3D geometry, HD textures, capes and emotes. On its own, the mod only works locally for Java players who have it installed. This plugin carries those skins to other Java and Bedrock players, and Bedrock players' skins to Java players.
 
-> Pumpkin's plugin API can't implement the skin functionality required by this plugin yet, so the plugin needs a **patched build of the Pumpkin server**. The patches are included and are small, but you do have to build Pumpkin yourself. See [Installation](#installation).
+> Pumpkin's plugin API doesn't expose the bedrock skin data required by this plugin, so the plugin needs a **patched build of the Pumpkin server**. The patches are included and are small, but you do have to build Pumpkin yourself. See [Installation](#installation).
 
 ## AI Disclaimer
 
